@@ -1,0 +1,7 @@
+.git
+.bundle
+coverage
+tmp
+pkg
+*.gem
+test

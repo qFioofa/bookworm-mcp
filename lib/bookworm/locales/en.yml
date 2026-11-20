@@ -1,0 +1,439 @@
+---
+en:
+  server:
+    instructions: |
+      Bookworm is a retrieval-only server for book analysis.
+
+      It searches books and text fragments and returns ranked passages with citations,
+      offsets, and score breakdowns. It never evaluates a book, ranks ideas by quality,
+      or writes an answer. Use read_passage to inspect a hit, find_quote to verify a
+      quotation, and ingest_text for an ad-hoc fragment.
+
+      Graph tools expose rule-based entity and relation links extracted from the text.
+      Those links are descriptive, not judgments of truth or quality.
+  cli:
+    usage: 'Usage: bookworm-mcp [options]'
+    version: Print version and exit
+    max_inline_bytes: Maximum inline text size
+    default_ttl: Default lifetime for inline text
+    locale: Interface locale (en, ru)
+    http: Serve MCP over HTTP and HTTPS instead of stdio
+    https: Also listen with TLS (default true; use --no-https to disable)
+    host: HTTP bind host (default 127.0.0.1)
+    port: HTTP bind port (default 9292)
+    https_port: HTTPS bind port (default 9443)
+    path: MCP endpoint path (default /mcp)
+    allowed_hosts: Extra allowed Host headers, comma-separated
+    ssl_cert: Path to a TLS certificate in PEM format
+    ssl_key: Path to a TLS private key in PEM format
+    help: Show this help
+  http:
+    listening: "Bookworm MCP server listening on %{url}"
+    self_signed: "No TLS certificate configured; using a generated self-signed certificate."
+  tools:
+    ingest_book:
+      title: Ingest book
+      description: Parse a local EPUB, PDF, FB2, DjVu, Markdown, or TXT book into
+        an in-memory searchable document.
+    ingest_text:
+      title: Ingest text fragment
+      description: Create an ephemeral in-memory document from inline text. Use it
+        for a passage, an article, or a fragment that is not a book.
+    list_documents:
+      title: List documents
+      description: List books and text fragments currently held in memory.
+    get_document:
+      title: Get document
+      description: Return document metadata and a shallow outline.
+    get_outline:
+      title: Get outline
+      description: Return the chapter and section tree for a book or text fragment.
+    read_passage:
+      title: Read passage
+      description: Read a passage by id, with optional neighbouring passages and a
+        citation.
+    search:
+      title: Search
+      description: Smart lexical search over a book, a text fragment, or all in-memory
+        documents. Returns ranked passages with citations and score breakdown. It
+        does not generate an answer.
+    find_quote:
+      title: Find quote
+      description: Find an exact or normalized quote in one document or across all
+        documents. Returns offsets and a verification flag.
+    delete_document:
+      title: Delete document
+      description: Remove a document from memory.
+    stats:
+      title: Server stats
+      description: Return in-memory document and passage counts.
+    search_entities:
+      title: Search entities
+      description: Find extracted people, terms, and acronyms in the in-memory documents.
+    get_entity:
+      title: Get entity
+      description: Return an entity profile with mentions, citations, relations, and
+        linked examples.
+    get_relations:
+      title: Get relations
+      description: Return a rule-based entity graph around an entity or a whole document.
+        Supports JSON and PlantUML output.
+    get_logical_chain:
+      title: Get logical chain
+      description: Find a shortest evidence-backed chain between two entities. Supports
+        JSON and PlantUML output.
+    find_cases:
+      title: Find cases
+      description: Find examples, illustrations, anecdotes, and case studies by marker,
+        query, or anchor entity.
+    get_case:
+      title: Get case
+      description: Return one example or case with its evidence, citation, and linked
+        entities.
+  errors:
+    not_found: Resource not found
+    validation_error: Invalid request
+    unsupported_format: Unsupported format
+    dependency_missing: A required external dependency is missing
+    text_too_large: Inline text is too large
+    ocr_required: OCR is required
+    internal_error: Internal server error
+    no_evidence: No matching evidence found
+  cases:
+    default_title: Example
+    title_with_chapter: "%{chapter}: example"
+    kind:
+      example: Example
+      case_study: Case study
+      anecdote: Anecdote
+      illustration: Illustration
+  graph:
+    legend: Rule-based links from the text. No evaluation.
+    title: Entity relations
+  search:
+    stopwords:
+    - a
+    - an
+    - the
+    - and
+    - or
+    - but
+    - if
+    - then
+    - of
+    - to
+    - in
+    - 'on'
+    - at
+    - for
+    - from
+    - by
+    - with
+    - as
+    - is
+    - are
+    - was
+    - were
+    - be
+    - been
+    - being
+    - it
+    - this
+    - that
+    - these
+    - those
+    - i
+    - you
+    - he
+    - she
+    - we
+    - they
+    - his
+    - her
+    - its
+    - their
+    - our
+    - your
+    - my
+    - me
+    - him
+    - us
+    - them
+    - not
+    - 'no'
+    - so
+    - do
+    - does
+    - did
+    - have
+    - has
+    - had
+    - will
+    - would
+    - can
+    - could
+    - should
+    - may
+    - might
+    - must
+    - about
+    - into
+    - over
+    - under
+    - between
+    - through
+    - during
+    - before
+    - after
+    - above
+    - below
+    - up
+    - down
+    - out
+    - 'off'
+    - than
+    - too
+    - very
+    - just
+    - also
+    stemmer:
+      suffixes:
+      - ingly
+      - edly
+      - ing
+      - ed
+      - ly
+      - es
+      - s
+  analysis:
+    entity_stopwords:
+    - the
+    - a
+    - an
+    - this
+    - that
+    - these
+    - those
+    - it
+    - he
+    - she
+    - they
+    - we
+    - you
+    - i
+    - his
+    - her
+    - their
+    - our
+    - my
+    - your
+    - its
+    - in
+    - 'on'
+    - at
+    - by
+    - for
+    - from
+    - with
+    - as
+    - but
+    - and
+    - or
+    - if
+    - when
+    - while
+    - after
+    - before
+    - during
+    - however
+    - therefore
+    - thus
+    - then
+    - there
+    - here
+    - chapter
+    - part
+    - section
+    - figure
+    - table
+    - example
+    - case
+    - study
+    - illustration
+    - anecdote
+    rake_stopwords:
+    - affect
+    - affected
+    - affects
+    - argue
+    - argued
+    - argues
+    - cause
+    - caused
+    - causes
+    - claim
+    - claimed
+    - claims
+    - comprise
+    - comprised
+    - comprises
+    - consist
+    - consisted
+    - consists
+    - contain
+    - contained
+    - contains
+    - contrast
+    - contrasted
+    - contrasts
+    - create
+    - created
+    - creates
+    - differ
+    - differed
+    - differs
+    - explain
+    - explained
+    - explains
+    - how
+    - include
+    - included
+    - includes
+    - influence
+    - influenced
+    - influences
+    - lead
+    - leads
+    - led
+    - more
+    - produce
+    - produced
+    - produces
+    - result
+    - resulted
+    - results
+    - said
+    - say
+    - says
+    - shape
+    - shaped
+    - shapes
+    - show
+    - shown
+    - shows
+    - studied
+    - studies
+    - study
+    - suggest
+    - suggested
+    - suggests
+    - use
+    - used
+    - uses
+    - what
+    - when
+    - where
+    - which
+    - who
+    - whom
+    - whose
+    - why
+    leading_articles:
+    - the
+    - a
+    - an
+    name_connectors:
+    - of
+    - the
+    - and
+    - de
+    - van
+    - von
+    - da
+    - di
+    - du
+    relation_cues:
+      IS_A:
+      - "\\b(?:is|are|was|were)\\s+(?:a|an|the)\\b"
+      CAUSES:
+      - "\\b(?:causes?|leads?\\s+to|results?\\s+in|produces?|creates?)\\b"
+      CONTRASTS:
+      - "\\b(?:contrasts?\\s+with|differs?\\s+from|opposed\\s+to|unlike)\\b"
+      INCLUDES:
+      - "\\b(?:includes?|contains?|consists?\\s+of|comprises?)\\b"
+      INFLUENCES:
+      - "\\b(?:influences?|affects?|shapes?)\\b"
+      EXAMPLE_OF:
+      - "\\b(?:for\\s+example|for\\s+instance|such\\s+as|e\\.g\\.)\\b"
+      PRECEDES:
+      - "\\b(?:precedes?|before)\\b"
+    case_markers:
+    - "\\bfor\\s+example\\b"
+    - "\\bfor\\s+instance\\b"
+    - "\\be\\.g\\.\\b"
+    - "\\bsuch\\s+as\\b"
+    - "\\bcase\\s+study\\b"
+    - "\\bexample\\b"
+    - "\\billustration\\b"
+    - "\\banecdote\\b"
+    case_heading_patterns:
+    - "\\b(?:example|case)\\w*"
+    case_kind_patterns:
+      case_study:
+      - "\\bcase\\s+study\\b"
+      anecdote:
+      - anecdote
+      illustration:
+      - illustration
+  ingest:
+    heading_patterns:
+    - "\\A(?:chapter|part|section|book)\\b"
+    - "\\A(?:chapter|part|book)\\s+[\\divxlcdm]+"
+  schemas:
+    path: Absolute or relative path to a local book file
+    title_override: Optional title override
+    text: Text to index
+    title_optional: Optional title
+    language_optional: Optional ISO language code
+    ttl_seconds: Ephemeral lifetime in seconds; 0 means no expiry
+    limit_documents: Maximum number of documents
+    document_id: Document id
+    node_id: Optional node id to start from
+    depth_outline: Maximum outline depth
+    passage_id: Passage id returned by search or ingest
+    before: Number of preceding passages
+    after: Number of following passages
+    max_tokens_passage: Approximate token budget per passage
+    query_search: Search query; supports quoted phrases, +required terms, and -excluded
+      terms
+    document_id_search: Optional document id; omit to search all documents
+    inline_text_search: Optional inline text to index for this search instead of document_id
+    inline_title: Title for inline text
+    language_inline: Language for inline text
+    k: Number of results
+    cursor: Opaque pagination cursor
+    include_text: Include full passage text in each hit
+    max_tokens_text: Approximate token budget for included text
+    quote: Quote to find
+    document_id_optional: Optional document id
+    inline_text_quote: Optional inline text to search instead of document_id
+    fuzzy: Also return fuzzy candidates when no exact match is found
+    max_results: Maximum number of occurrences
+    query_entities: Entity name or prefix; omit to list top entities
+    limit_entities: Maximum number of entities
+    entity_id: Entity id returned by search_entities
+    entity_id_optional: Optional entity id; omit to return a document graph
+    depth_relations: Neighbourhood depth
+    limit_edges: Maximum number of edges
+    max_nodes: Maximum number of nodes
+    include_evidence: Include evidence in JSON and PlantUML
+    include_url: Also return a PlantUML server URL
+    start: Start entity id or name
+    finish: Finish entity id or name
+    max_depth: Maximum expected chain length
+    query_cases: Optional search query
+    anchor: Optional entity id or name
+    limit_cases: Maximum number of cases
+    include_case_text: Include full case text
+    case_id: Case id returned by find_cases
+    predicates: Optional predicate filter, for example CAUSES or IS_A
