@@ -56,15 +56,17 @@ module Bookworm
             document_id: string,
             document_kind: string,
             document_title: string,
-            passage_id: string,
-            node_id: string,
+            passage_id: { type: ["string", "null"] },
+            node_id: { type: ["string", "null"] },
             chapter_path: array(string),
             page: { type: ["integer", "null"] },
             paragraph_index: integer,
             start_char: integer,
             end_char: integer,
             quote_hash: string,
-            verified: boolean
+            verified: boolean,
+            footnote_id: { type: ["string", "null"] },
+            footnote_label: { type: ["string", "null"] }
           },
           %w[document_id passage_id start_char end_char verified]
         )
@@ -87,12 +89,25 @@ module Bookworm
               {
                 nodes: integer,
                 passages: integer,
+                footnotes: integer,
                 characters: integer
               },
               %w[nodes passages characters]
             )
           },
           %w[document_id kind title counts]
+        )
+      end
+
+      def footnote
+        object(
+          {
+            footnote_id: string,
+            label: string,
+            node_id: { type: ["string", "null"] },
+            text: string
+          },
+          %w[footnote_id label]
         )
       end
 
@@ -104,7 +119,9 @@ module Bookworm
             truncated: boolean,
             page: { type: ["integer", "null"] },
             chapter_path: array(string),
-            citation: citation
+            citation: citation,
+            footnote_ids: array(string),
+            footnotes: array(footnote)
           },
           %w[passage_id text citation]
         )
@@ -142,7 +159,7 @@ module Bookworm
             text: string,
             text_truncated: boolean
           },
-          %w[rank passage_id citation snippet score score_breakdown matched_terms coverage match_type]
+          %w[rank passage_id citation snippet score match_type]
         )
       end
 
@@ -151,6 +168,10 @@ module Bookworm
           {
             query: string,
             mode: string,
+            retrieval: string,
+            semantic: boolean,
+            fallback: { type: ["string", "null"] },
+            verbosity: string,
             total: integer,
             returned: integer,
             limit: integer,
@@ -175,6 +196,11 @@ module Bookworm
             page_end: { type: ["integer", "null"] },
             start_char: { type: ["integer", "null"] },
             end_char: { type: ["integer", "null"] },
+            content_start_char: { type: ["integer", "null"] },
+            content_end_char: { type: ["integer", "null"] },
+            first_passage_id: { type: ["string", "null"] },
+            last_passage_id: { type: ["string", "null"] },
+            footnote_count: integer,
             passage_count: integer,
             direct_passage_count: integer,
             children: array({ type: "object" })
@@ -196,9 +222,28 @@ module Bookworm
         object(
           {
             document: document_summary,
+            cached: boolean,
             first_passage_id: { type: ["string", "null"] }
           },
           %w[document]
+        )
+      end
+
+      def ingest_books_output
+        object(
+          {
+            total: integer,
+            succeeded: integer,
+            failed: integer,
+            results: array(object({
+              path: string,
+              document: document_summary,
+              cached: boolean,
+              first_passage_id: { type: ["string", "null"] },
+              error: { type: "object" }
+            }))
+          },
+          %w[total succeeded failed results]
         )
       end
 
@@ -208,16 +253,44 @@ module Bookworm
             passage: passage_payload,
             before: array(passage_payload),
             after: array(passage_payload),
+            footnotes: array(footnote),
             document: document_summary
           },
           %w[passage before after document]
         )
       end
 
+      def read_chapter_output
+        object(
+          {
+            document: document_summary,
+            node: outline_node,
+            passages: array(passage_payload),
+            footnotes: array(footnote),
+            offset: integer,
+            total: integer,
+            returned: integer,
+            next_offset: { type: ["integer", "null"] },
+            range: {
+              type: ["object", "null"],
+              properties: {
+                start_char: integer,
+                end_char: integer
+              }
+            }
+          },
+          %w[document node passages footnotes total returned]
+        )
+      end
+
       def quote_occurrence
         object(
           {
-            passage_id: string,
+            passage_id: { type: ["string", "null"] },
+            passage_ids: array(string),
+            footnote_id: { type: ["string", "null"] },
+            label: { type: ["string", "null"] },
+            location: string,
             citation: citation,
             local_start: { type: ["integer", "null"] },
             local_end: { type: ["integer", "null"] },
@@ -227,9 +300,11 @@ module Bookworm
             match_type: string,
             similarity: number,
             verified: boolean,
-            quote_hash: { type: ["string", "null"] }
+            quote_hash: { type: ["string", "null"] },
+            verification: { type: "object" },
+            warning: string
           },
-          %w[passage_id citation match_type similarity verified]
+          %w[passage_id passage_ids citation match_type similarity verified verification]
         )
       end
 
@@ -237,17 +312,28 @@ module Bookworm
         object(
           {
             quote: string,
+            source: string,
             total: integer,
             returned: integer,
             no_evidence: boolean,
+            book_evidence: integer,
+            text_evidence: integer,
             occurrences: array(quote_occurrence)
           },
-          %w[quote total returned no_evidence occurrences]
+          %w[quote source total returned no_evidence occurrences]
         )
       end
 
       def outline_output
-        object({ document: document_summary, root: outline_node }, %w[document root])
+        object(
+          {
+            document: document_summary,
+            root: outline_node,
+            returned_nodes: integer,
+            truncated: boolean
+          },
+          %w[document root returned_nodes truncated]
+        )
       end
 
       def list_documents_output
@@ -261,6 +347,8 @@ module Bookworm
             passages: integer,
             characters: integer,
             version: integer,
+            cache: object({ hits: integer, misses: integer }),
+            document: document_summary,
             locale: string,
             config: object({
               max_inline_bytes: integer,
@@ -350,6 +438,7 @@ module Bookworm
             entity_id: { type: ["string", "null"] },
             document_id: { type: ["string", "null"] },
             depth: integer,
+            min_confidence: number,
             total_nodes: integer,
             total_edges: integer,
             nodes: array(entity_summary),
@@ -369,6 +458,7 @@ module Bookworm
             finish: entity_summary,
             path: array(string),
             hops: { type: ["integer", "null"] },
+            min_confidence: number,
             completeness: string,
             nodes: array(entity_summary),
             edges: array(relation_edge),
@@ -385,11 +475,15 @@ module Bookworm
             case_id: string,
             document_id: string,
             passage_id: string,
+            passage_ids: array(string),
+            node_id: string,
+            chapter_path: array(string),
             title: string,
             kind: string,
             kind_label: string,
             markers: array(string),
             citation: citation,
+            range: object({ start_char: integer, end_char: integer }),
             linked_entity_ids: array(string),
             linked_entities: array(string),
             confidence: number,
@@ -397,7 +491,7 @@ module Bookworm
             score: number,
             text: string
           },
-          %w[case_id document_id passage_id title kind citation]
+          %w[case_id document_id passage_id passage_ids title kind citation]
         )
       end
 
@@ -418,10 +512,15 @@ module Bookworm
         object(
           {
             case: case_summary,
+            passages: array(object({
+              passage_id: string,
+              text: string,
+              citation: citation
+            })),
             linked_entities: array(entity_summary),
             document: document_summary
           },
-          %w[case linked_entities document]
+          %w[case passages linked_entities document]
         )
       end
 

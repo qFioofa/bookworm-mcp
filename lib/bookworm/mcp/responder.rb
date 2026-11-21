@@ -26,9 +26,11 @@ module Bookworm
       def failure(code, message, details = {})
         localized = Bookworm::I18n.t("errors.#{code.to_s.downcase}", default: message)
         payload = { error: { code: code, message: localized, details: details } }
+        # Do not attach structured_content to error responses. Some MCP clients
+        # validate structuredContent against the tool output schema even when
+        # isError is true, which hides the real error behind a schema mismatch.
         ::MCP::Tool::Response.new(
-          [{ type: "text", text: JSON.generate(payload) }],
-          structured_content: payload,
+          [{ type: "text", text: JSON.pretty_generate(payload) }],
           error: true
         )
       end

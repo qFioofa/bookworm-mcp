@@ -24,11 +24,14 @@ module Bookworm
         cursor: nil,
         include_text: false,
         filters: {},
-        max_tokens: nil
+        max_tokens: nil,
+        verbosity: "full",
+        include_breakdown: true
       )
         started = Process.clock_gettime(Process::CLOCK_MONOTONIC)
         @store.remove_expired!
         mode = normalize_mode(mode)
+        verbosity = normalize_verbosity(verbosity)
         filters = (filters || {}).transform_keys(&:to_sym)
         document_id = document_id.to_s unless document_id.nil?
         document_id = nil if document_id&.empty?
@@ -40,17 +43,21 @@ module Bookworm
         end
 
         if documents.empty?
-          return empty_result(query_object, mode, started)
+          return empty_result(query_object, mode, started, verbosity)
         end
 
         index = index_for(documents)
         ids = candidate_ids(index, query_object, mode)
-        results = ids.filter_map do |passage_id|
-          passage = index.passages[passage_id]
-          next unless passage
+        results = collect_results(ids, index, query_object, mode, filters)
+        fallback = nil
 
-          document = index.documents[passage.document_id]
-          evaluate(passage, document, index, query_object, mode, filters)
+        if results.empty? && mode == "smart"
+          relaxed = relaxed_query(query_object)
+          if relaxed
+            relaxed_ids = candidate_ids(index, relaxed, mode)
+            results = collect_results(relaxed_ids, index, relaxed, mode, filters)
+            fallback = "relaxed_phrase" unless results.empty?
+          end
         end
 
         results.sort_by! { |result| [-result[:raw], result[:passage].ordinal] }
@@ -65,12 +72,24 @@ module Bookworm
         next_cursor = offset + limit < results.length ? encode_cursor(offset + limit) : nil
 
         hits = page.map.with_index(1) do |result, index_number|
-          build_hit(result, offset + index_number, query_object, include_text, max_tokens)
+          build_hit(
+            result,
+            offset + index_number,
+            query_object,
+            include_text,
+            max_tokens,
+            verbosity: verbosity,
+            include_breakdown: include_breakdown
+          )
         end
 
         {
           query: query_object.raw,
           mode: mode,
+          retrieval: "lexical",
+          semantic: false,
+          fallback: fallback,
+          verbosity: verbosity,
           total: results.length,
           returned: hits.length,
           limit: limit,
@@ -89,6 +108,16 @@ module Bookworm
         raise ValidationError.new(
           "Unknown search mode: #{value}",
           details: { supported: MODES }
+        )
+      end
+
+      def normalize_verbosity(verbosity)
+        value = (verbosity || "full").to_s
+        return value if %w[full compact].include?(value)
+
+        raise ValidationError.new(
+          "Unknown verbosity: #{value}",
+          details: { supported: %w[full compact] }
         )
       end
 
@@ -130,6 +159,34 @@ module Bookworm
         return [] if mode == "lexical"
 
         index.passages.keys
+      end
+
+      def collect_results(ids, index, query, mode, filters)
+        ids.filter_map do |passage_id|
+          passage = index.passages[passage_id]
+          next unless passage
+
+          document = index.documents[passage.document_id]
+          evaluate(passage, document, index, query, mode, filters)
+        end
+      end
+
+      def relaxed_query(query)
+        return nil if query.phrases.empty?
+
+        phrase_terms = query.phrases.flat_map do |phrase|
+          Tokenizer.tokenize(phrase).map(&:text)
+        end
+        terms = (query.terms + phrase_terms).uniq
+        return nil if terms.empty?
+
+        Query.new(
+          raw: query.raw,
+          terms: terms,
+          required: query.required,
+          excluded: query.excluded,
+          phrases: []
+        )
       end
 
       def evaluate(passage, document, index, query, mode, filters)
@@ -280,7 +337,7 @@ module Bookworm
         count
       end
 
-      def build_hit(result, rank, query, include_text, max_tokens)
+      def build_hit(result, rank, query, include_text, max_tokens, verbosity: "full", include_breakdown: true)
         passage = result[:passage]
         document = @store.find_document(passage.document_id)
         terms = snippet_terms(query)
@@ -295,10 +352,20 @@ module Bookworm
           passage_id: passage.id,
           citation: Domain::Citation.build(document: document, passage: passage),
           snippet: snippet,
-          highlights: highlights,
           score: result[:score],
-          raw_score: result[:raw].round(4),
-          score_breakdown: {
+          match_type: result[:match_type]
+        }
+
+        if verbosity == "full"
+          hit[:highlights] = highlights
+          hit[:raw_score] = result[:raw].round(4)
+          hit[:matched_terms] = result[:matched_terms]
+          hit[:coverage] = result[:coverage].round(3)
+          hit[:entity_ids] = []
+        end
+
+        if include_breakdown && verbosity == "full"
+          hit[:score_breakdown] = {
             lexical: result[:bm25].round(4),
             vector: 0.0,
             phrase: result[:phrase].round(4),
@@ -306,12 +373,8 @@ module Bookworm
             exact: result[:exact].round(4),
             fuzzy: result[:fuzzy].round(4),
             fused: result[:raw].round(4)
-          },
-          matched_terms: result[:matched_terms],
-          coverage: result[:coverage].round(3),
-          match_type: result[:match_type],
-          entity_ids: []
-        }
+          }
+        end
 
         if include_text
           text = passage.text
@@ -337,10 +400,14 @@ module Bookworm
         terms.uniq
       end
 
-      def empty_result(query, mode, started)
+      def empty_result(query, mode, started, verbosity)
         {
           query: query.raw,
           mode: mode,
+          retrieval: "lexical",
+          semantic: false,
+          fallback: nil,
+          verbosity: verbosity,
           total: 0,
           returned: 0,
           limit: 0,

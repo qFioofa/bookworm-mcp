@@ -1,0 +1,283 @@
+---
+- id: triage
+  steps:
+    - tool: list_documents
+      args:
+        limit: 50
+    - tool: stats
+    - tool: get_document
+      requires: document_id
+      args:
+        document_id: "{{document_id}}"
+    - tool: get_outline
+      requires: document_id
+      args:
+        document_id: "{{document_id}}"
+        depth: 2
+  stop_when: scenarios.triage.stop_when
+  output: scenarios.triage.output
+  guardrails:
+    - scenarios.guardrails.report_gaps
+    - scenarios.guardrails.no_answer
+
+- id: fact_lookup
+  steps:
+    - tool: search
+      args:
+        query: "<key terms from the request>"
+        document_id: "{{document_id}}"
+        k: 5
+        verbosity: compact
+    - tool: read_passage
+      args:
+        passage_id: "<passage_id from the best hit>"
+        before: 1
+        after: 1
+    - tool: find_quote
+      args:
+        quote: "<exact quotation from the passage>"
+        document_id: "{{document_id}}"
+        source: book
+  stop_when: scenarios.fact_lookup.stop_when
+  output: scenarios.fact_lookup.output
+  guardrails:
+    - scenarios.guardrails.citations_required
+    - scenarios.guardrails.no_invented_quotes
+    - scenarios.guardrails.no_answer
+
+- id: quote_verification
+  steps:
+    - tool: find_quote
+      args:
+        quote: "<quotation from the request>"
+        document_id: "{{document_id}}"
+        source: book
+        fuzzy: false
+        max_results: 10
+    - tool: read_passage
+      args:
+        passage_id: "<passage_id from a verified occurrence>"
+        before: 1
+        after: 1
+  stop_when: scenarios.quote_verification.stop_when
+  output: scenarios.quote_verification.output
+  guardrails:
+    - scenarios.guardrails.verified_only
+    - scenarios.guardrails.text_warning
+    - scenarios.guardrails.no_invented_quotes
+
+- id: chapter_study
+  steps:
+    - tool: get_outline
+      args:
+        document_id: "{{document_id}}"
+        depth: 3
+    - tool: read_chapter
+      args:
+        document_id: "{{document_id}}"
+        node_id: "<node_id from the outline>"
+        limit: 50
+    - tool: search
+      args:
+        query: "<key terms from the request>"
+        document_id: "{{document_id}}"
+        filters:
+          node_id: "<node_id from the outline>"
+        k: 5
+        verbosity: compact
+  stop_when: scenarios.chapter_study.stop_when
+  output: scenarios.chapter_study.output
+  guardrails:
+    - scenarios.guardrails.citations_required
+    - scenarios.guardrails.pagination
+    - scenarios.guardrails.no_answer
+
+- id: entity_profile
+  steps:
+    - tool: search_entities
+      args:
+        query: "<entity name from the request>"
+        document_id: "{{document_id}}"
+        limit: 10
+    - tool: get_entity
+      args:
+        entity_id: "<entity_id from search_entities>"
+    - tool: get_relations
+      args:
+        entity_id: "<entity_id from search_entities>"
+        depth: 1
+        include_evidence: true
+        max_nodes: 30
+    - tool: read_passage
+      args:
+        passage_id: "<passage_id from a mention>"
+        before: 1
+        after: 1
+  stop_when: scenarios.entity_profile.stop_when
+  output: scenarios.entity_profile.output
+  guardrails:
+    - scenarios.guardrails.citations_required
+    - scenarios.guardrails.graph_descriptive
+
+- id: concept_chain
+  steps:
+    - tool: search_entities
+      args:
+        query: "<start concept>"
+        document_id: "{{document_id}}"
+        limit: 10
+    - tool: search_entities
+      args:
+        query: "<finish concept>"
+        document_id: "{{document_id}}"
+        limit: 10
+    - tool: get_logical_chain
+      args:
+        start: "<start entity name or id>"
+        finish: "<finish entity name or id>"
+        document_id: "{{document_id}}"
+        max_depth: 4
+        format: both
+        include_evidence: true
+    - tool: get_relations
+      args:
+        entity_id: "<entity_id from the chain>"
+        depth: 1
+        include_evidence: true
+    - tool: read_passage
+      args:
+        passage_id: "<passage_id from edge evidence>"
+        before: 0
+        after: 0
+  stop_when: scenarios.concept_chain.stop_when
+  output: scenarios.concept_chain.output
+  guardrails:
+    - scenarios.guardrails.citations_required
+    - scenarios.guardrails.graph_descriptive
+    - scenarios.guardrails.report_gaps
+
+- id: case_collection
+  steps:
+    - tool: find_cases
+      args:
+        query: "<topic from the request>"
+        document_id: "{{document_id}}"
+        limit: 10
+    - tool: get_case
+      args:
+        case_id: "<case_id from find_cases>"
+    - tool: read_passage
+      args:
+        passage_id: "<passage_id from the case>"
+        before: 1
+        after: 1
+  stop_when: scenarios.case_collection.stop_when
+  output: scenarios.case_collection.output
+  guardrails:
+    - scenarios.guardrails.citations_required
+    - scenarios.guardrails.no_answer
+
+- id: cross_book_comparison
+  steps:
+    - tool: list_documents
+      args:
+        limit: 50
+    - tool: search
+      args:
+        query: "<shared topic>"
+        document_id: "{{document_id}}"
+        k: 5
+        verbosity: compact
+    - tool: search_entities
+      args:
+        query: "<shared topic>"
+        document_id: "{{document_id}}"
+        limit: 10
+    - tool: get_relations
+      args:
+        document_id: "{{document_id}}"
+        depth: 1
+        include_evidence: true
+        max_nodes: 30
+    - tool: find_quote
+      args:
+        quote: "<quotation from one book>"
+        document_id: "{{document_id}}"
+        source: book
+  stop_when: scenarios.cross_book_comparison.stop_when
+  output: scenarios.cross_book_comparison.output
+  guardrails:
+    - scenarios.guardrails.separate_citations
+    - scenarios.guardrails.citations_required
+    - scenarios.guardrails.no_evaluation
+
+- id: evidence_pack
+  steps:
+    - tool: search
+      args:
+        query: "<first query variant>"
+        document_id: "{{document_id}}"
+        k: 10
+        verbosity: compact
+    - tool: search
+      args:
+        query: "<second query variant>"
+        document_id: "{{document_id}}"
+        k: 10
+        verbosity: compact
+    - tool: read_chapter
+      args:
+        document_id: "{{document_id}}"
+        node_id: "<node_id from the outline>"
+        limit: 50
+    - tool: find_cases
+      args:
+        query: "<topic from the request>"
+        document_id: "{{document_id}}"
+        limit: 10
+    - tool: get_relations
+      args:
+        document_id: "{{document_id}}"
+        depth: 1
+        include_evidence: true
+        max_nodes: 30
+  stop_when: scenarios.evidence_pack.stop_when
+  output: scenarios.evidence_pack.output
+  guardrails:
+    - scenarios.guardrails.citations_required
+    - scenarios.guardrails.report_gaps
+    - scenarios.guardrails.pagination
+    - scenarios.guardrails.no_answer
+
+- id: notes_cross_check
+  steps:
+    - tool: ingest_text
+      args:
+        text: "<claim or notes from the request>"
+        title: "Claim"
+        format: plain
+        ttl_seconds: 3600
+    - tool: find_quote
+      args:
+        quote: "<claim or quotation to verify>"
+        document_id: "{{document_id}}"
+        source: any
+        fuzzy: false
+        max_results: 10
+    - tool: search
+      args:
+        query: "<key terms from the claim>"
+        document_id: "{{document_id}}"
+        k: 5
+        verbosity: compact
+    - tool: read_passage
+      args:
+        passage_id: "<passage_id from a book hit>"
+        before: 1
+        after: 1
+  stop_when: scenarios.notes_cross_check.stop_when
+  output: scenarios.notes_cross_check.output
+  guardrails:
+    - scenarios.guardrails.text_warning
+    - scenarios.guardrails.verified_only
+    - scenarios.guardrails.citations_required

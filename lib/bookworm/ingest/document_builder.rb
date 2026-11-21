@@ -1,7 +1,5 @@
 # frozen_string_literal: true
 
-require "securerandom"
-
 module Bookworm
   module Ingest
     class DocumentBuilder
@@ -83,7 +81,8 @@ module Bookworm
               page: block.page,
               paragraph_index: paragraph_index,
               token_count: estimate_tokens(passage_text),
-              chapter_path: chapter_path
+              chapter_path: chapter_path,
+              footnote_ids: block.footnote_ids
             )
             paragraph_index += 1
           end
@@ -101,6 +100,7 @@ module Bookworm
           expires_at: ttl_seconds ? Time.now + ttl_seconds : nil,
           nodes: nodes,
           passages: passages,
+          footnotes: draft.footnotes || [],
           metadata: draft.metadata || {},
           full_text: full_text
         )
@@ -110,7 +110,7 @@ module Bookworm
 
       def build_document_id(kind, source_hash)
         prefix = kind == "text" ? "txt" : "doc"
-        "#{prefix}_#{source_hash[0, 16]}_#{SecureRandom.hex(3)}"
+        "#{prefix}_#{source_hash[0, 16]}"
       end
 
       def normalize_block_text(block)

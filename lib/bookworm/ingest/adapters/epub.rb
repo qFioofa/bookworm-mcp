@@ -16,6 +16,9 @@ module Bookworm
           "figcaption" => [:paragraph, nil]
         }.freeze
         CONTAINER_TAGS = %w[body div section article main header footer aside].freeze
+        TOC_MIN_LINKS = 5
+        TOC_LINK_TEXT_RATIO = 0.6
+        TOC_LINK_PATTERN = /<a\b[^>]*>(.*?)<\/a>/mi
 
         def parse(path)
           Zip::File.open(path) do |zip|
@@ -34,10 +37,12 @@ module Bookworm
               item = manifest[idref]
               next unless item
               next unless item[:media_type].to_s.include?("html")
+              next if nav_item?(item)
 
               entry_path = resolve_path(base_dir, item[:href])
               content = zip.read(entry_path) rescue nil
               next unless content
+              next if toc_document?(content)
 
               html_blocks = extract_html_blocks(content)
               next if html_blocks.empty?
@@ -73,6 +78,30 @@ module Bookworm
           REXML::Document.new(content)
         rescue StandardError => e
           raise UnsupportedFormatError.new("Cannot read EPUB entry #{path}: #{e.message}")
+        end
+
+        def nav_item?(item)
+          item[:properties].to_s.split(/\s+/).include?("nav")
+        end
+
+        def toc_document?(content)
+          html = content.to_s
+          links = html.scan(TOC_LINK_PATTERN)
+          return false if links.length < TOC_MIN_LINKS
+
+          total_text = plain_text(html)
+          return false if total_text.empty?
+
+          link_text = links.map { |capture| plain_text(capture.first) }.join(" ")
+          link_text.length >= total_text.length * TOC_LINK_TEXT_RATIO
+        end
+
+        def plain_text(html)
+          text = html.to_s
+                     .gsub(/<script.*?<\/script>/mi, " ")
+                     .gsub(/<style.*?<\/style>/mi, " ")
+                     .gsub(/<[^>]+>/, " ")
+          Util::Text.decode_entities(text).gsub(/\s+/, " ").strip
         end
 
         def find_rootfile(document)

@@ -8,6 +8,8 @@ require "rgl/dijkstra_visitor"
 
 module Bookworm
   class App
+    DEFAULT_MIN_CONFIDENCE = 0.5
+
     attr_reader :config, :store, :pipeline, :search_engine
 
     def initialize(config: Config.new)
@@ -18,17 +20,59 @@ module Bookworm
       @graphs = {}
     end
 
-    def ingest_book(path, title: nil)
-      @pipeline.ingest_book(path, title: title)
+    def ingest_book(path, title: nil, replace: false)
+      @pipeline.ingest_book(path, title: title, replace: replace).document
     end
 
-    def ingest_text(text, title: nil, format: "plain", language: nil, ttl_seconds: nil)
+    def ingest_book_result(path, title: nil, replace: false)
+      @pipeline.ingest_book(path, title: title, replace: replace)
+    end
+
+    def ingest_books(paths, title: nil, replace: false)
+      results = Array(paths).map do |path|
+        result = @pipeline.ingest_book(path, title: title, replace: replace)
+        {
+          path: path.to_s,
+          document: result.document.to_h,
+          cached: result.cached,
+          first_passage_id: result.document.passages.first&.id
+        }
+      rescue Bookworm::Error => e
+        {
+          path: path.to_s,
+          error: { code: e.code, message: e.message, details: e.details }
+        }
+      end
+
+      {
+        total: results.length,
+        succeeded: results.count { |item| !item.key?(:error) },
+        failed: results.count { |item| item.key?(:error) },
+        results: results
+      }
+    end
+
+    def ingest_text(text = nil, title: nil, format: nil, language: nil, ttl_seconds: nil, source_path: nil, source_url: nil)
       @pipeline.ingest_text(
         text,
         title: title,
         format: format,
         language: language,
-        ttl_seconds: ttl_seconds
+        ttl_seconds: ttl_seconds,
+        source_path: source_path,
+        source_url: source_url
+      ).document
+    end
+
+    def ingest_text_result(text = nil, title: nil, format: nil, language: nil, ttl_seconds: nil, source_path: nil, source_url: nil)
+      @pipeline.ingest_text(
+        text,
+        title: title,
+        format: format,
+        language: language,
+        ttl_seconds: ttl_seconds,
+        source_path: source_path,
+        source_url: source_url
       )
     end
 
@@ -50,21 +94,26 @@ module Bookworm
 
     def get_document(document_id)
       document = fetch_document(document_id)
+      built = build_outline(document, document.root_node, depth: 1, max_nodes: 50, titles_only: true)
       {
         document: document.to_h,
-        outline: outline_node(document, document.root_node, depth: 2)
+        outline: built[:root]
       }
     end
 
-    def get_outline(document_id:, depth: 3, node_id: nil)
+    def get_outline(document_id:, depth: 10, node_id: nil, max_nodes: 200, titles_only: false)
       document = fetch_document(document_id)
       root = node_id ? document.node(node_id.to_s) : document.root_node
       raise NotFoundError.new("Node not found", details: { document_id: document_id, node_id: node_id }) unless root
 
       depth = [[depth.to_i, 0].max, 10].min
+      max_nodes = max_nodes.nil? ? 200 : [[max_nodes.to_i, 1].max, 1000].min
+      built = build_outline(document, root, depth: depth, max_nodes: max_nodes, titles_only: titles_only)
       {
         document: document.to_h,
-        root: outline_node(document, root, depth: depth)
+        root: built[:root],
+        returned_nodes: built[:returned_nodes],
+        truncated: built[:truncated]
       }
     end
 
@@ -80,85 +129,78 @@ module Bookworm
       after = [[after.to_i, 0].max, 20].min
       limit = max_tokens ? max_tokens.to_i * 4 : nil
 
+      before_passages = passages[[index - before, 0].max...index].to_a
+      after_passages = passages[(index + 1)..(index + after)].to_a
+      returned = [passage] + before_passages + after_passages
       {
-        passage: passage_payload(document, passage, limit),
-        before: passages[[index - before, 0].max...index].to_a.map { |item| passage_payload(document, item, limit) },
-        after: passages[(index + 1)..(index + after)].to_a.map { |item| passage_payload(document, item, limit) },
+        passage: passage_payload(document, passage, limit, include_footnotes: true),
+        before: before_passages.map { |item| passage_payload(document, item, limit, include_footnotes: true) },
+        after: after_passages.map { |item| passage_payload(document, item, limit, include_footnotes: true) },
+        footnotes: footnotes_payload(document, returned),
         document: document.to_h
       }
     end
 
-    def find_quote(quote:, document_id: nil, fuzzy: false, max_results: 10)
+    def read_chapter(document_id:, node_id:, offset: 0, limit: 50, max_tokens: nil, include_footnotes: true)
+      document = fetch_document(document_id)
+      node = document.node(node_id.to_s)
+      raise NotFoundError.new("Node not found", details: { document_id: document_id, node_id: node_id }) unless node
+
+      passages = document.passages_for(node.id, include_descendants: true)
+      offset = [[offset.to_i, 0].max, passages.length].min
+      limit = [[limit.to_i, 1].max, 200].min
+      slice = passages[offset, limit] || []
+      char_limit = max_tokens ? max_tokens.to_i * 4 : nil
+      range = document.content_range(node.id)
+
+      {
+        document: document.to_h,
+        node: build_outline(document, node, depth: 0, max_nodes: 1, titles_only: false)[:root],
+        passages: slice.map do |passage|
+          passage_payload(document, passage, char_limit, include_footnotes: include_footnotes)
+        end,
+        footnotes: include_footnotes ? footnotes_payload(document, slice) : [],
+        offset: offset,
+        total: passages.length,
+        returned: slice.length,
+        next_offset: offset + slice.length < passages.length ? offset + slice.length : nil,
+        range: range ? { start_char: range[0], end_char: range[1] } : nil
+      }
+    end
+
+    def find_quote(quote:, document_id: nil, fuzzy: false, max_results: 10, source: "any")
       @store.remove_expired!
       query = quote.to_s.strip
       raise ValidationError.new("Quote must not be empty") if query.empty?
 
+      source = normalize_quote_source(source)
       documents = @store.documents
       if document_id
         document = fetch_document(document_id)
         documents = [document]
       end
+      documents = documents.select { |document| quote_source_matches?(document, source) }
 
-      regex = quote_regex(query)
-      occurrences = []
-
-      documents.each do |document|
-        document.passages.each do |passage|
-          position = 0
-          while (match = regex.match(passage.text, position))
-            occurrences << quote_occurrence(
-              document,
-              passage,
-              match[0],
-              match.begin(0),
-              match.end(0),
-              match_type: passage.text.include?(query) ? "exact" : "normalized",
-              similarity: 1.0,
-              verified: true
-            )
-            position = match.begin(0) + [match[0].length, 1].max
-          end
-        end
-      end
+      occurrences = documents.flat_map { |document| document_quote_occurrences(document, query) }
 
       if occurrences.empty? && fuzzy
-        candidates = []
-        documents.each do |document|
-          document.passages.each do |passage|
-            similarity = Search::Trigram.similarity(query, passage.text)
-            next if similarity < 0.15
-
-            candidates << { document: document, passage: passage, similarity: similarity }
-          end
-        end
-        candidates.sort_by { |candidate| -candidate[:similarity] }.first(max_results.to_i).each do |candidate|
-          occurrences << quote_occurrence(
-            candidate[:document],
-            candidate[:passage],
-            nil,
-            nil,
-            nil,
-            match_type: "fuzzy",
-            similarity: candidate[:similarity],
-            verified: false
-          )
-        end
+        occurrences = fuzzy_quote_occurrences(documents, query, max_results)
       end
 
-      occurrences = occurrences.sort_by do |occurrence|
-        [
-          occurrence[:citation][:document_id],
-          occurrence[:citation][:start_char],
-          occurrence[:span_start_char] || 0
-        ]
-      end
-
+      occurrences = sort_quote_occurrences(occurrences)
       limit = [[max_results.to_i, 1].max, @config.max_results].min
+      book_evidence = occurrences.count do |item|
+        %w[book footnote].include?(item.dig(:verification, :source))
+      end
+      text_evidence = occurrences.count { |item| item.dig(:verification, :source) == "text" }
       {
         quote: query,
+        source: source,
         total: occurrences.length,
         returned: [occurrences.length, limit].min,
         no_evidence: occurrences.empty?,
+        book_evidence: book_evidence,
+        text_evidence: text_evidence,
         occurrences: occurrences.first(limit)
       }
     end
@@ -232,7 +274,9 @@ module Bookworm
       end.first(50)
 
       relations = found.flat_map do |graph, _entity|
-        graph.relations_for(entity.id).map { |relation| relation_payload(graph, relation, include_evidence: true) }
+        graph.relations_for(entity.id)
+             .select { |relation| relation.confidence.to_f >= DEFAULT_MIN_CONFIDENCE }
+             .map { |relation| relation_payload(graph, relation, include_evidence: true) }
       end.first(100)
 
       cases = found.flat_map do |graph, _entity|
@@ -254,13 +298,14 @@ module Bookworm
     def get_relations(
       entity_id: nil, document_id: nil, depth: 1, predicates: nil,
       limit: 100, format: "json", include_evidence: true, max_nodes: 50,
-      include_url: false
+      include_url: false, min_confidence: DEFAULT_MIN_CONFIDENCE
     )
       format = normalize_format(format)
       graphs = scoped_graphs(document_id)
       depth = [[depth.to_i, 0].max, 5].min
       max_nodes = [[max_nodes.to_i, 1].max, 200].min
       limit = [[limit.to_i, 1].max, 500].min
+      min_confidence = normalize_confidence(min_confidence)
       allowed_predicates = normalize_predicates(predicates)
       nodes = {}
       edges = {}
@@ -276,6 +321,7 @@ module Bookworm
           end
           graph.relations.each do |relation|
             next unless nodes.key?(relation.source_id) && nodes.key?(relation.target_id)
+            next if relation.confidence.to_f < min_confidence
             next if allowed_predicates && !allowed_predicates.include?(relation.predicate)
 
             add_graph_edge(edges, graph, relation, include_evidence: include_evidence)
@@ -289,6 +335,7 @@ module Bookworm
             add_graph_node(nodes, graph, id)
           end
           graph.relations.each do |relation|
+            next if relation.confidence.to_f < min_confidence
             next if allowed_predicates && !allowed_predicates.include?(relation.predicate)
 
             add_graph_edge(edges, graph, relation, include_evidence: include_evidence)
@@ -308,6 +355,7 @@ module Bookworm
         entity_id: entity_id,
         document_id: document_id,
         depth: depth,
+        min_confidence: min_confidence,
         total_nodes: total_nodes,
         total_edges: total_edges,
         nodes: nodes,
@@ -320,10 +368,11 @@ module Bookworm
 
     def get_logical_chain(
       start:, finish:, document_id: nil, max_depth: 4, format: "json",
-      include_evidence: true, include_url: false
+      include_evidence: true, include_url: false, min_confidence: DEFAULT_MIN_CONFIDENCE
     )
       format = normalize_format(format)
       graphs = scoped_graphs(document_id)
+      min_confidence = normalize_confidence(min_confidence)
       start_entity = resolve_entity(start, graphs)
       finish_entity = resolve_entity(finish, graphs)
       unless start_entity && finish_entity
@@ -343,6 +392,8 @@ module Bookworm
           graph.add_vertex(entity.id)
         end
         item.relations.each do |relation|
+          next if relation.confidence.to_f < min_confidence
+
           graph.add_edge(relation.source_id, relation.target_id)
           graph.add_edge(relation.target_id, relation.source_id) unless relation.directed
           remember_edge(edge_map, relation, item)
@@ -378,6 +429,7 @@ module Bookworm
         finish: finish_entity.to_h,
         path: path.to_a,
         hops: path ? path.length - 1 : nil,
+        min_confidence: min_confidence,
         completeness: completeness,
         nodes: chain_nodes,
         edges: chain_edges
@@ -393,34 +445,26 @@ module Bookworm
         raise NotFoundError.new("Entity not found", details: { anchor: anchor })
       end
 
-      scores = {}
-      if query && !query.to_s.strip.empty?
-        result = search(
-          query: query,
-          document_id: document_id,
-          k: [[limit.to_i * 4, 10].max, 50].min,
-          include_text: false
-        )
-        result[:hits].each { |hit| scores[hit[:passage_id]] = hit[:score] }
-      end
-
+      query = query.to_s.strip
       items = []
       graphs.each do |graph|
         graph.cases.each do |item|
           next if anchor_entity && !item.linked_entity_ids.include?(anchor_entity.id)
-          next if query && !scores.key?(item.passage_id)
 
-          items << { graph: graph, case: item, score: scores[item.passage_id] || 0.0 }
+          score = query.empty? ? 0.0 : case_score(item, query)
+          next if !query.empty? && score <= 0.0
+
+          items << { graph: graph, case: item, score: score }
         end
       end
 
       items.sort_by! do |item|
-        [-item[:score], -item[:case].confidence.to_f, item[:case].citation[:start_char].to_i]
+        [-item[:score], -item[:case].confidence.to_f, item[:case].start_char.to_i]
       end
 
       limit = [[limit.to_i, 1].max, 100].min
       {
-        query: query,
+        query: query.empty? ? nil : query,
         anchor: anchor,
         total: items.length,
         returned: [items.length, limit].min,
@@ -440,8 +484,20 @@ module Bookworm
         item = graph.cases.find { |candidate| candidate.id == case_id.to_s }
         next unless item
 
+        passages = Array(item.passage_ids).filter_map do |passage_id|
+          passage = graph.document.passage(passage_id)
+          next unless passage
+
+          {
+            passage_id: passage.id,
+            text: passage.text,
+            citation: Domain::Citation.build(document: graph.document, passage: passage)
+          }
+        end
+
         return {
           case: item.to_h(include_text: true),
+          passages: passages,
           linked_entities: item.linked_entity_ids.filter_map { |id| graph.entity(id)&.to_h },
           document: graph.document.to_h
         }
@@ -450,10 +506,28 @@ module Bookworm
       raise NotFoundError.new("Case not found", details: { case_id: case_id })
     end
 
-    def stats
+    def stats(document_id: nil)
       @store.remove_expired!
+      if document_id
+        document = fetch_document(document_id)
+        return {
+          documents: 1,
+          passages: document.passages.length,
+          characters: document.full_text.length,
+          version: @store.version,
+          cache: @pipeline.cache_stats,
+          document: document.to_h,
+          config: {
+            max_inline_bytes: @config.max_inline_bytes,
+            default_ttl: @config.default_ttl,
+            max_passage_chars: @config.max_passage_chars
+          }
+        }
+      end
+
       @store.stats.merge(
         version: @store.version,
+        cache: @pipeline.cache_stats,
         config: {
           max_inline_bytes: @config.max_inline_bytes,
           default_ttl: @config.default_ttl,
@@ -489,22 +563,41 @@ module Bookworm
     def entity_score(entity, normalized)
       return 1.0 + Math.log10(entity.mention_count + 1) if normalized.empty?
 
-      direct = entity.normalized
-      base = if direct == normalized
-               100.0
-             elsif direct.start_with?(normalized)
-               70.0
-             elsif direct.include?(normalized)
-               50.0
-             elsif normalized.split.all? { |token| direct.include?(token) }
-               30.0
-             else
-               similarity = Search::Trigram.similarity(normalized, direct)
-               return nil if similarity < 0.45
+      scores = entity_names(entity).filter_map do |direct|
+        entity_name_score(direct, normalized)
+      end
+      return nil if scores.empty?
 
-               20.0 * similarity
-             end
-      base + Math.log10(entity.mention_count + 1)
+      scores.max + Math.log10(entity.mention_count + 1)
+    end
+
+    def entity_names(entity)
+      ([entity.normalized] + Array(entity.aliases).map { |alias_name| normalize_entity_query(alias_name) }).uniq
+    end
+
+    def entity_name_score(direct, normalized)
+      return 100.0 if direct == normalized
+      return 70.0 if direct.start_with?(normalized)
+      return 50.0 if direct.include?(normalized)
+      return 30.0 if normalized.split.all? { |token| direct.include?(token) }
+
+      similarity = Search::Trigram.similarity(normalized, direct)
+      similarity < 0.45 ? nil : 20.0 * similarity
+    end
+
+    def case_score(item, query)
+      normalized_query = Util::Text.normalize_for_match(query)
+      terms = Search::Tokenizer.terms(query).uniq
+      text = Util::Text.normalize_for_match(item.text)
+      stems = Search::Tokenizer.terms(item.text).to_set
+      matched = terms.count { |term| stems.include?(term) }
+      coverage = terms.empty? ? 0.0 : matched.to_f / terms.length
+      phrase = normalized_query.empty? || !text.include?(normalized_query) ? 0.0 : 1.0
+      score = (coverage * 0.8) + (phrase * 0.6)
+      return score if score.positive? || normalized_query.empty?
+
+      similarity = Search::Trigram.similarity(normalized_query, text)
+      similarity >= 0.35 ? similarity : 0.0
     end
 
     def mention_payload(document, mention)
@@ -544,6 +637,11 @@ module Bookworm
       list = predicates.is_a?(Array) ? predicates : predicates.to_s.split(",")
       list = list.map { |predicate| predicate.to_s.strip.upcase }.reject(&:empty?).uniq
       list.empty? ? nil : list
+    end
+
+    def normalize_confidence(value)
+      number = value.nil? ? DEFAULT_MIN_CONFIDENCE : value.to_f
+      [[number, 0.0].max, 1.0].min
     end
 
     def add_graph_node(nodes, graph, entity_id)
@@ -623,11 +721,14 @@ module Bookworm
       return direct if direct
 
       normalized = normalize_entity_query(needle)
-      exact = entities.find { |entity| entity.normalized == normalized }
+      exact = entities.find { |entity| entity_names(entity).include?(normalized) }
       return exact if exact
 
       scored = entities.map do |entity|
-        [entity, Search::Trigram.similarity(normalized, entity.normalized)]
+        similarity = entity_names(entity).map do |name|
+          Search::Trigram.similarity(normalized, name)
+        end.max || 0.0
+        [entity, similarity]
       end.max_by { |entity, similarity| [similarity, entity.mention_count] }
       return scored.first if scored && scored.last >= 0.6
 
@@ -655,7 +756,7 @@ module Bookworm
       document
     end
 
-    def passage_payload(document, passage, char_limit)
+    def passage_payload(document, passage, char_limit, include_footnotes: false)
       text = passage.text
       truncated = false
       if char_limit && text.length > char_limit
@@ -663,7 +764,7 @@ module Bookworm
         truncated = true
       end
 
-      {
+      payload = {
         passage_id: passage.id,
         text: text,
         truncated: truncated,
@@ -671,19 +772,76 @@ module Bookworm
         chapter_path: passage.chapter_path,
         citation: Domain::Citation.build(document: document, passage: passage)
       }
+      if include_footnotes
+        payload[:footnote_ids] = passage.footnote_ids
+        payload[:footnotes] = footnotes_payload(document, [passage])
+      end
+      payload
     end
 
-    def outline_node(document, node, depth:)
-      payload = node.to_h.merge(
-        passage_count: document.passage_count_for(node.id, include_descendants: true),
-        direct_passage_count: document.passage_count_for(node.id, include_descendants: false)
+    def footnotes_payload(document, passages)
+      passages.flat_map(&:footnote_ids).uniq.filter_map do |footnote_id|
+        document.footnote(footnote_id)&.to_h
+      end
+    end
+
+    def build_outline(document, node, depth:, max_nodes:, titles_only:)
+      budget = { count: 0, truncated: false }
+      root = outline_node(
+        document,
+        node,
+        depth: depth,
+        max_nodes: max_nodes,
+        titles_only: titles_only,
+        budget: budget
       )
+      { root: root, returned_nodes: budget[:count], truncated: budget[:truncated] }
+    end
+
+    def outline_node(document, node, depth:, max_nodes:, titles_only:, budget:)
+      if budget[:count] >= max_nodes
+        budget[:truncated] = true
+        return nil
+      end
+
+      budget[:count] += 1
+      payload = if titles_only
+                  node.to_h.slice(:node_id, :parent_id, :kind, :title, :level, :page_start, :page_end)
+                else
+                  range = document.content_range(node.id)
+                  first_passage = document.first_passage_for(node.id)
+                  last_passage = document.last_passage_for(node.id)
+                  node.to_h.merge(
+                    passage_count: document.passage_count_for(node.id, include_descendants: true),
+                    direct_passage_count: document.passage_count_for(node.id, include_descendants: false),
+                    content_start_char: range&.first,
+                    content_end_char: range&.last,
+                    first_passage_id: first_passage&.id,
+                    last_passage_id: last_passage&.id,
+                    footnote_count: document.footnote_ids_for(node.id).length
+                  )
+                end
+
       if depth.positive?
-        children = document.children_of(node.id).map do |child|
-          outline_node(document, child, depth: depth - 1)
+        children = []
+        document.children_of(node.id).each do |child|
+          built = outline_node(
+            document,
+            child,
+            depth: depth - 1,
+            max_nodes: max_nodes,
+            titles_only: titles_only,
+            budget: budget
+          )
+          unless built
+            budget[:truncated] = true
+            break
+          end
+          children << built
         end
         payload[:children] = children unless children.empty?
       end
+
       payload
     end
 
@@ -692,21 +850,243 @@ module Bookworm
       Regexp.new(parts.join("\\s+"), Regexp::IGNORECASE)
     end
 
-    def quote_occurrence(document, passage, matched_text, local_start, local_end, match_type:, similarity:, verified:)
+    def normalize_quote_source(source)
+      value = (source || "any").to_s
+      return value if %w[any book text].include?(value)
+
+      raise ValidationError.new(
+        "Unknown quote source: #{value}",
+        details: { supported: %w[any book text] }
+      )
+    end
+
+    def quote_source_matches?(document, source)
+      return true if source == "any"
+
+      document.kind == source
+    end
+
+    def document_quote_occurrences(document, query)
+      occurrences = []
+      regex = quote_regex(query)
+      passages = document.passages.sort_by(&:start_char)
+
+      scan_text_occurrences(document.full_text, regex) do |matched, start_char, end_char|
+        overlapping = overlapping_passages(passages, start_char, end_char)
+        citation = quote_citation(document, start_char, end_char, matched, overlapping.first)
+        match_type = document.full_text[start_char...end_char] == query ? "exact" : "normalized"
+        occurrences << text_quote_occurrence(
+          document,
+          matched,
+          start_char,
+          end_char,
+          citation,
+          overlapping,
+          match_type
+        )
+      end
+
+      document.footnotes.each do |footnote|
+        scan_text_occurrences(footnote.text, regex) do |matched, start_char, end_char|
+          match_type = footnote.text[start_char...end_char] == query ? "exact" : "normalized"
+          occurrences << footnote_quote_occurrence(
+            document,
+            footnote,
+            matched,
+            start_char,
+            end_char,
+            match_type
+          )
+        end
+      end
+
+      occurrences
+    end
+
+    def scan_text_occurrences(text, regex)
+      position = 0
+      while (match = regex.match(text, position))
+        yield match[0], match.begin(0), match.end(0)
+        position = match.begin(0) + [match[0].length, 1].max
+      end
+    end
+
+    def overlapping_passages(passages, start_char, end_char)
+      index = passages.bsearch_index { |passage| passage.end_char > start_char }
+      return [] unless index
+
+      result = []
+      while index < passages.length
+        passage = passages[index]
+        break if passage.start_char >= end_char
+
+        result << passage if passage.end_char > start_char
+        index += 1
+      end
+      result
+    end
+
+    def quote_citation(document, start_char, end_char, matched_text, passage)
+      return Domain::Citation.build(document: document, passage: passage) if passage
+
+      node = document.nodes.find do |item|
+        item.start_char && item.end_char && item.start_char < end_char && item.end_char > start_char
+      end
+      Domain::Citation.build_span(
+        document: document,
+        start_char: start_char,
+        end_char: end_char,
+        text: matched_text,
+        node_id: node&.id,
+        chapter_path: node ? [node.title].compact : []
+      )
+    end
+
+    def text_quote_occurrence(document, matched_text, start_char, end_char, citation, overlapping, match_type)
+      source = document.kind == "book" ? "book" : "text"
       occurrence = {
-        passage_id: passage.id,
-        citation: Domain::Citation.build(document: document, passage: passage),
-        local_start: local_start,
-        local_end: local_end,
-        span_start_char: local_start ? passage.start_char + local_start : nil,
-        span_end_char: local_end ? passage.start_char + local_end : nil,
+        passage_id: overlapping.first&.id,
+        passage_ids: overlapping.map(&:id),
+        footnote_id: nil,
+        label: nil,
+        location: "text",
+        citation: citation,
+        local_start: local_quote_offset(overlapping.first, start_char),
+        local_end: local_quote_end(overlapping.first, end_char),
+        span_start_char: start_char,
+        span_end_char: end_char,
         matched_text: matched_text,
         match_type: match_type,
-        similarity: similarity.round(4),
-        verified: verified,
-        quote_hash: matched_text ? Digest::SHA256.hexdigest(matched_text) : nil
+        similarity: 1.0,
+        verified: true,
+        quote_hash: Digest::SHA256.hexdigest(matched_text),
+        verification: verification_payload(
+          document,
+          source: source,
+          span: [start_char, end_char],
+          passage_ids: overlapping.map(&:id),
+          exact: match_type == "exact"
+        )
       }
+      occurrence[:warning] = Bookworm::I18n.t("quotes.text_warning") if source == "text"
       occurrence
+    end
+
+    def local_quote_offset(passage, start_char)
+      return nil unless passage
+      return nil if start_char < passage.start_char || start_char >= passage.end_char
+
+      start_char - passage.start_char
+    end
+
+    def local_quote_end(passage, end_char)
+      return nil unless passage
+      return nil if end_char > passage.end_char
+
+      end_char - passage.start_char
+    end
+
+    def footnote_quote_occurrence(document, footnote, matched_text, start_char, end_char, match_type)
+      {
+        passage_id: nil,
+        passage_ids: [],
+        footnote_id: footnote.id,
+        label: footnote.label,
+        location: "footnote",
+        citation: Domain::Citation.build_for_footnote(
+          document: document,
+          footnote: footnote,
+          start_char: start_char,
+          end_char: end_char,
+          text: matched_text
+        ),
+        local_start: start_char,
+        local_end: end_char,
+        span_start_char: nil,
+        span_end_char: nil,
+        matched_text: matched_text,
+        match_type: match_type,
+        similarity: 1.0,
+        verified: true,
+        quote_hash: Digest::SHA256.hexdigest(matched_text),
+        verification: verification_payload(
+          document,
+          source: "footnote",
+          span: nil,
+          passage_ids: [],
+          exact: match_type == "exact",
+          footnote_id: footnote.id
+        )
+      }
+    end
+
+    def fuzzy_quote_occurrences(documents, query, max_results)
+      candidates = []
+      documents.each do |document|
+        document.passages.each do |passage|
+          similarity = Search::Trigram.similarity(query, passage.text)
+          next if similarity < 0.15
+
+          candidates << { document: document, passage: passage, similarity: similarity }
+        end
+      end
+
+      candidates.sort_by { |candidate| -candidate[:similarity] }.first(max_results.to_i).map do |candidate|
+        document = candidate[:document]
+        passage = candidate[:passage]
+        source = document.kind == "book" ? "book" : "text"
+        occurrence = {
+          passage_id: passage.id,
+          passage_ids: [passage.id],
+          footnote_id: nil,
+          label: nil,
+          location: "text",
+          citation: Domain::Citation.build(document: document, passage: passage),
+          local_start: nil,
+          local_end: nil,
+          span_start_char: nil,
+          span_end_char: nil,
+          matched_text: nil,
+          match_type: "fuzzy",
+          similarity: candidate[:similarity].round(4),
+          verified: false,
+          quote_hash: nil,
+          verification: verification_payload(
+            document,
+            source: source,
+            span: nil,
+            passage_ids: [passage.id],
+            exact: false
+          )
+        }
+        occurrence[:warning] = Bookworm::I18n.t("quotes.text_warning") if source == "text"
+        occurrence
+      end
+    end
+
+    def verification_payload(document, source:, span:, passage_ids:, exact:, footnote_id: nil)
+      {
+        source: source,
+        document_id: document.id,
+        document_kind: document.kind,
+        document_title: document.title,
+        ephemeral: document.ephemeral?,
+        exact: exact,
+        span: span ? { start_char: span[0], end_char: span[1] } : nil,
+        passage_ids: passage_ids,
+        footnote_id: footnote_id
+      }
+    end
+
+    def sort_quote_occurrences(occurrences)
+      rank = { "book" => 0, "footnote" => 1, "text" => 2 }
+      occurrences.sort_by do |occurrence|
+        [
+          rank[occurrence.dig(:verification, :source)].to_i,
+          occurrence[:citation][:document_id].to_s,
+          occurrence[:span_start_char] || occurrence[:local_start] || 0
+        ]
+      end
     end
   end
 end

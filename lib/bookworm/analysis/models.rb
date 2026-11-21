@@ -57,8 +57,9 @@ module Bookworm
     end
 
     Case = Struct.new(
-      :id, :document_id, :passage_id, :title, :kind, :markers, :text, :citation,
-      :linked_entity_ids, :confidence, :method,
+      :id, :document_id, :passage_id, :passage_ids, :node_id, :chapter_path,
+      :title, :kind, :markers, :text, :citation, :linked_entity_ids,
+      :confidence, :method, :start_char, :end_char,
       keyword_init: true
     ) do
       def to_h(include_text: true)
@@ -66,11 +67,18 @@ module Bookworm
           case_id: id,
           document_id: document_id,
           passage_id: passage_id,
+          passage_ids: passage_ids || Array(passage_id),
+          node_id: node_id,
+          chapter_path: chapter_path || citation[:chapter_path],
           title: title,
           kind: kind,
           kind_label: Bookworm::I18n.t("cases.kind.#{kind}", default: kind),
           markers: markers,
           citation: citation,
+          range: {
+            start_char: start_char || citation[:start_char],
+            end_char: end_char || citation[:end_char]
+          },
           linked_entity_ids: linked_entity_ids,
           confidence: confidence,
           method: method

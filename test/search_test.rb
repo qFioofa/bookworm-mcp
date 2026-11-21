@@ -31,12 +31,33 @@ class SearchTest < Minitest::Test
     refute_empty result[:hits].first[:highlights]
   end
 
+  def test_compact_search_output
+    result = @app.search(query: "loss", k: 2, verbosity: "compact", include_breakdown: false)
+
+    assert_equal "lexical", result[:retrieval]
+    assert_equal false, result[:semantic]
+    hit = result[:hits].first
+    refute hit.key?(:highlights)
+    refute hit.key?(:score_breakdown)
+    refute hit.key?(:matched_terms)
+    assert hit[:citation]
+    assert hit[:snippet]
+  end
+
   def test_phrase_search
     result = @app.search(query: '"loss aversion"', k: 5)
     top = result[:hits].first
 
     assert_equal "phrase", top[:match_type]
     assert_operator top[:score_breakdown][:phrase], :>, 0
+  end
+
+  def test_phrase_search_falls_back_to_relaxed_terms
+    result = @app.search(query: '"loss bias"', k: 5)
+
+    assert_equal "relaxed_phrase", result[:fallback]
+    assert_operator result[:total], :>=, 1
+    assert result[:hits].any? { |hit| hit[:snippet].downcase.include?("loss") }
   end
 
   def test_required_and_excluded_terms
@@ -104,5 +125,65 @@ class SearchTest < Minitest::Test
 
     assert_equal @document.id, outline[:document][:document_id]
     assert_equal 3, outline[:root][:passage_count]
+  end
+
+  def test_long_inline_text_is_chunked
+    text = (["integration"] * 1200).join(" ")
+    document = @app.ingest_text(text, title: "Long")
+
+    assert_operator document.passages.length, :>, 1
+    assert document.passages.all? { |passage| passage.text.length <= 1400 }
+  end
+
+  def test_ingest_text_rejects_placeholder
+    error = assert_raises(Bookworm::ValidationError) do
+      @app.ingest_text("$(placeholder)")
+    end
+
+    assert_equal "placeholder", error.details[:reason]
+  end
+
+  def test_ingest_text_reads_source_path
+    Dir.mktmpdir("bookworm-text") do |dir|
+      path = File.join(dir, "notes.md")
+      File.write(path, "# Heading\n\nA file based fragment.")
+
+      document = @app.ingest_text(source_path: path)
+
+      assert_equal "notes", document.title
+      assert_includes document.full_text, "A file based fragment."
+      assert_equal "markdown", document.format
+      assert_operator document.passages.length, :>=, 1
+    end
+  end
+
+  def test_ingest_text_missing_source_path_reports_file_not_found
+    error = assert_raises(Bookworm::NotFoundError) do
+      @app.ingest_text(source_path: "/tmp/bookworm-missing-text-file.txt")
+    end
+
+    assert_equal "file_not_found", error.details[:reason]
+    assert_includes error.details[:hint], "Docker"
+  end
+
+  def test_ingest_text_rejects_non_text_source_path
+    Dir.mktmpdir("bookworm-text") do |dir|
+      path = File.join(dir, "book.fb2")
+      File.write(path, "<FictionBook/>")
+
+      error = assert_raises(Bookworm::ValidationError) do
+        @app.ingest_text(source_path: path)
+      end
+
+      assert_equal "non_text_source", error.details[:reason]
+    end
+  end
+
+  def test_ingest_text_rejects_non_http_source_url
+    error = assert_raises(Bookworm::ValidationError) do
+      @app.ingest_text(source_url: "file:///etc/passwd")
+    end
+
+    assert_equal "unsupported_url", error.details[:reason]
   end
 end

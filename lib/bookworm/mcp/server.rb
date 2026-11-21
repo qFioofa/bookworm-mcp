@@ -10,6 +10,7 @@ module Bookworm
         version: Bookworm::VERSION,
         instructions: Bookworm::I18n.t("server.instructions"),
         tools: Tools::ALL,
+        prompts: Prompts::ALL,
         server_context: { app: app }
       )
     end

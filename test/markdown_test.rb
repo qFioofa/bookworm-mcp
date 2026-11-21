@@ -32,6 +32,45 @@ class MarkdownTest < Minitest::Test
     assert_equal "Section A", outline[:root][:children].first[:children].first[:title]
   end
 
+  def test_outline_can_be_compact_and_capped
+    outline = @app.get_outline(document_id: @document.id, depth: 10, max_nodes: 2, titles_only: true)
+
+    assert_equal 2, outline[:returned_nodes]
+    assert_equal true, outline[:truncated]
+    node = outline[:root][:children].first
+    refute node.key?(:content_start_char)
+    refute node.key?(:passage_count)
+    assert node[:node_id]
+    assert node[:title]
+  end
+
+  def test_get_document_returns_shallow_title_outline
+    document = @app.get_document(@document.id)
+
+    outline = document[:outline]
+    assert_equal 2, outline[:children].length
+    assert outline[:children].all? { |child| !child.key?(:children) }
+    refute outline[:children].first.key?(:content_start_char)
+  end
+
+  def test_markdown_toc_links_are_not_passages
+    document = @app.ingest_text(
+      <<~MARKDOWN,
+        # Chapter One
+
+        - [Chapter One](#chapter-one)
+        - [Chapter Two](#chapter-two)
+
+        Real content lives here.
+      MARKDOWN
+      title: "TOC",
+      format: "markdown"
+    )
+
+    refute document.passages.any? { |passage| ["Chapter One", "Chapter Two"].include?(passage.text.strip) }
+    assert document.passages.any? { |passage| passage.text.include?("Real content") }
+  end
+
   def test_search_can_be_scoped_to_node
     outline = @app.get_outline(document_id: @document.id, depth: 3)
     section = outline[:root][:children].first[:children].first

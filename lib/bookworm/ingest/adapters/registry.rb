@@ -8,6 +8,8 @@ module Bookworm
 
         def for_path(path)
           extension = File.extname(path).downcase
+          return Fb2.new if path.to_s.downcase.end_with?(".fb2.zip")
+
           case extension
           when ".epub" then Epub.new
           when ".pdf" then Pdf.new
@@ -18,7 +20,7 @@ module Bookworm
           else
             raise UnsupportedFormatError.new(
               "Unsupported book format: #{extension.empty? ? "unknown" : extension}",
-              details: { path: path, supported: %w[.epub .pdf .fb2 .djvu .md .txt] }
+              details: { path: path, supported: %w[.epub .pdf .fb2 .fb2.zip .djvu .md .txt] }
             )
           end
         end

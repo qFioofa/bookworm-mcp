@@ -9,7 +9,7 @@ class GraphTest < Minitest::Test
       <<~TEXT,
         Loss aversion is a cognitive bias. Daniel Kahneman and Amos Tversky studied loss aversion.
 
-        Loss aversion causes risk seeking when a person faces a certain loss. For example, an investor refuses to sell a losing stock.
+        Loss aversion causes risk seeking when a person faces a certain loss. Risk seeking often follows a certain loss. For example, an investor refuses to sell a losing stock.
 
         Prospect theory includes loss aversion and reference dependence. Prospect theory contrasts with expected utility theory.
 
@@ -75,9 +75,80 @@ class GraphTest < Minitest::Test
     example = result[:cases].first
     assert_equal "example", example[:kind]
     refute_empty example[:markers]
+    assert_operator example[:passage_ids].length, :>=, 1
 
     full = @app.get_case(example[:case_id])
     assert_equal example[:case_id], full[:case][:case_id]
     refute_empty full[:case][:text]
+    refute_empty full[:passages]
+  end
+
+  def test_entity_noise_is_filtered
+    document = @app.ingest_text(
+      "АНАЛИЗ показывает, что бояться повторять не стоит. Воздействие одно, двух сторон мало.",
+      title: "Noise"
+    )
+
+    result = @app.search_entities(document_id: document.id, limit: 50)
+    names = result[:entities].map { |entity| entity[:name] }
+
+    refute_includes names, "АНАЛИЗ"
+    assert names.none? { |name| name.include?("бояться") || name.include?("Воздействие одно") || name.include?("двух сторон") }
+  end
+
+  def test_weak_co_occurs_edges_are_hidden_by_default
+    default = @app.get_relations(document_id: @document.id, limit: 500)
+    refute default[:edges].any? { |edge| edge[:predicate] == "CO_OCCURS" }
+    assert_equal 0.5, default[:min_confidence]
+
+    with_weak = @app.get_relations(document_id: @document.id, limit: 500, min_confidence: 0)
+    assert with_weak[:edges].any? { |edge| edge[:predicate] == "CO_OCCURS" }
+  end
+
+  def test_entity_relations_omit_weak_edges
+    entity = @app.search_entities(query: "loss aversion", limit: 1)[:entities].first
+    relations = @app.get_entity(entity[:entity_id])[:relations]
+
+    refute relations.any? { |relation| relation[:predicate] == "CO_OCCURS" }
+  end
+
+  def test_part_of_relation_is_typed
+    document = @app.ingest_text(
+      "«Модуль» входит в «Систему». «Система» включает «Модуль».",
+      title: "Part of"
+    )
+
+    graph = @app.get_relations(document_id: document.id, include_evidence: false)
+    assert graph[:edges].any? { |edge| edge[:predicate] == "PART_OF" }
+    assert graph[:edges].any? { |edge| edge[:predicate] == "INCLUDES" }
+  end
+
+  def test_case_section_is_merged_and_name_forms_are_linked
+    document = @app.ingest_text(
+      <<~TEXT,
+        ## Кейс. Изменение роли
+
+        Мой ученик Павел начал бизнес с партнером.
+
+        Мой партнер Павла не согласился с новой ролью.
+
+        Мой партнер предложил Павлу выйти из бизнеса.
+      TEXT
+      title: "Case merge",
+      format: "markdown"
+    )
+
+    entities = @app.search_entities(query: "Павел", document_id: document.id)
+    entity = entities[:entities].find { |item| item[:name] == "Павел" || item[:aliases].include?("Павел") }
+    refute_nil entity
+    assert_operator entity[:mention_count], :>=, 3
+    assert_includes entity[:aliases], "Павла"
+
+    cases = @app.find_cases(document_id: document.id, anchor: "Павел", limit: 5)
+    assert_equal 1, cases[:total]
+    merged = cases[:cases].first
+    assert_equal "Кейс. Изменение роли", merged[:title]
+    assert_equal 3, merged[:passage_ids].length
+    assert_operator merged[:range][:end_char], :>, merged[:range][:start_char]
   end
 end

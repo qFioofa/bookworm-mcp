@@ -19,19 +19,45 @@ module Bookworm
           type: "object",
           properties: {
             path: Schemas.string(:path),
-            title: Schemas.string(:title_override)
+            title: Schemas.string(:title_override),
+            replace: Schemas.boolean(:replace_document)
           },
           required: ["path"]
         )
         output_schema(Schemas.ingest_output)
 
-        def self.call(path:, server_context:, title: nil)
+        def self.call(path:, server_context:, title: nil, replace: false)
           Responder.call do
-            document = Tools.app(server_context).ingest_book(path, title: title)
+            result = Tools.app(server_context).ingest_book_result(path, title: title, replace: replace)
+            document = result.document
             {
               document: document.to_h,
+              cached: result.cached,
               first_passage_id: document.passages.first&.id
             }
+          end
+        end
+      end
+
+      class IngestBooksTool < ::MCP::Tool
+        tool_name "ingest_books"
+        title Bookworm::I18n.t("tools.ingest_books.title")
+        description Bookworm::I18n.t("tools.ingest_books.description")
+        annotations(read_only_hint: false, destructive_hint: false, idempotent_hint: true, open_world_hint: false)
+        input_schema(
+          type: "object",
+          properties: {
+            paths: { type: "array", items: { type: "string" }, description: Schemas.description(:paths_batch) },
+            title: Schemas.string(:title_override),
+            replace: Schemas.boolean(:replace_document)
+          },
+          required: ["paths"]
+        )
+        output_schema(Schemas.ingest_books_output)
+
+        def self.call(paths:, server_context:, title: nil, replace: false)
+          Responder.call do
+            Tools.app(server_context).ingest_books(paths, title: title, replace: replace)
           end
         end
       end
@@ -44,27 +70,32 @@ module Bookworm
         input_schema(
           type: "object",
           properties: {
-            text: Schemas.string(:text),
+            text: Schemas.string(:text_inline_optional),
+            source_path: Schemas.string(:source_path_text),
+            source_url: Schemas.string(:source_url_text),
             title: Schemas.string(:title_optional),
-            format: { type: "string", enum: %w[plain markdown], default: "plain" },
+            format: { type: "string", enum: %w[plain markdown] },
             language: Schemas.string(:language_optional),
             ttl_seconds: Schemas.integer(:ttl_seconds, minimum: 0)
-          },
-          required: ["text"]
+          }
         )
         output_schema(Schemas.ingest_output)
 
-        def self.call(text:, server_context:, title: nil, format: "plain", language: nil, ttl_seconds: nil)
+        def self.call(text: nil, server_context:, title: nil, format: nil, language: nil, ttl_seconds: nil, source_path: nil, source_url: nil)
           Responder.call do
-            document = Tools.app(server_context).ingest_text(
+            result = Tools.app(server_context).ingest_text_result(
               text,
               title: title,
               format: format,
               language: language,
-              ttl_seconds: ttl_seconds
+              ttl_seconds: ttl_seconds,
+              source_path: source_path,
+              source_url: source_url
             )
+            document = result.document
             {
               document: document.to_h,
+              cached: result.cached,
               first_passage_id: document.passages.first&.id
             }
           end
@@ -121,15 +152,23 @@ module Bookworm
           properties: {
             document_id: Schemas.string(:document_id),
             node_id: Schemas.string(:node_id),
-            depth: Schemas.integer(:depth_outline, minimum: 0, maximum: 10)
+            depth: Schemas.integer(:depth_outline, minimum: 0, maximum: 10),
+            max_nodes: Schemas.integer(:max_nodes_outline, minimum: 1, maximum: 1000),
+            titles_only: Schemas.boolean(:titles_only)
           },
           required: ["document_id"]
         )
         output_schema(Schemas.outline_output)
 
-        def self.call(document_id:, server_context:, node_id: nil, depth: 3)
+        def self.call(document_id:, server_context:, node_id: nil, depth: 10, max_nodes: 200, titles_only: false)
           Responder.call do
-            Tools.app(server_context).get_outline(document_id: document_id, node_id: node_id, depth: depth)
+            Tools.app(server_context).get_outline(
+              document_id: document_id,
+              node_id: node_id,
+              depth: depth,
+              max_nodes: max_nodes,
+              titles_only: titles_only
+            )
           end
         end
       end
@@ -163,6 +202,39 @@ module Bookworm
         end
       end
 
+      class ReadChapterTool < ::MCP::Tool
+        tool_name "read_chapter"
+        title Bookworm::I18n.t("tools.read_chapter.title")
+        description Bookworm::I18n.t("tools.read_chapter.description")
+        annotations(read_only_hint: true, idempotent_hint: true, open_world_hint: false)
+        input_schema(
+          type: "object",
+          properties: {
+            document_id: Schemas.string(:document_id),
+            node_id: Schemas.string(:node_id_chapter),
+            offset: Schemas.integer(:offset_chapter, minimum: 0),
+            limit: Schemas.integer(:limit_chapter, minimum: 1, maximum: 200),
+            max_tokens: Schemas.integer(:max_tokens_passage, minimum: 1),
+            include_footnotes: Schemas.boolean(:include_footnotes)
+          },
+          required: %w[document_id node_id]
+        )
+        output_schema(Schemas.read_chapter_output)
+
+        def self.call(document_id:, node_id:, server_context:, offset: 0, limit: 50, max_tokens: nil, include_footnotes: true)
+          Responder.call do
+            Tools.app(server_context).read_chapter(
+              document_id: document_id,
+              node_id: node_id,
+              offset: offset,
+              limit: limit,
+              max_tokens: max_tokens,
+              include_footnotes: include_footnotes
+            )
+          end
+        end
+      end
+
       class SearchTool < ::MCP::Tool
         tool_name "search"
         title Bookworm::I18n.t("tools.search.title")
@@ -177,11 +249,13 @@ module Bookworm
             title: Schemas.string(:inline_title),
             format: { type: "string", enum: %w[plain markdown] },
             language: Schemas.string(:language_inline),
-            mode: { type: "string", enum: %w[smart lexical exact fuzzy], default: "smart" },
+            mode: { type: "string", enum: %w[smart lexical exact fuzzy], default: "smart", description: Schemas.description(:mode_search) },
             k: Schemas.integer(:k, minimum: 1, maximum: 50),
             cursor: Schemas.string(:cursor),
             include_text: Schemas.boolean(:include_text),
             max_tokens: Schemas.integer(:max_tokens_text, minimum: 1),
+            verbosity: { type: "string", enum: %w[full compact], default: "full", description: Schemas.description(:verbosity_search) },
+            include_breakdown: Schemas.boolean(:include_breakdown),
             filters: {
               type: "object",
               properties: {
@@ -200,7 +274,8 @@ module Bookworm
         def self.call(
           query:, server_context:, document_id: nil, text: nil, title: nil,
           format: nil, language: nil, mode: "smart", k: 10, cursor: nil,
-          include_text: false, max_tokens: nil, filters: nil
+          include_text: false, max_tokens: nil, filters: nil,
+          verbosity: "full", include_breakdown: true
         )
           Responder.call do
             raise ValidationError.new("Provide either document_id or text, not both") if document_id && text
@@ -220,7 +295,9 @@ module Bookworm
               cursor: cursor,
               include_text: include_text,
               filters: filters || {},
-              max_tokens: max_tokens
+              max_tokens: max_tokens,
+              verbosity: verbosity,
+              include_breakdown: include_breakdown
             )
           end
         end
@@ -241,6 +318,7 @@ module Bookworm
             format: { type: "string", enum: %w[plain markdown] },
             language: Schemas.string(:language_inline),
             fuzzy: Schemas.boolean(:fuzzy),
+            source: { type: "string", enum: %w[any book text], default: "any", description: Schemas.description(:source_quote) },
             max_results: Schemas.integer(:max_results, minimum: 1, maximum: 50)
           },
           required: ["quote"]
@@ -249,7 +327,7 @@ module Bookworm
 
         def self.call(
           quote:, server_context:, document_id: nil, text: nil, title: nil,
-          format: nil, language: nil, fuzzy: false, max_results: 10
+          format: nil, language: nil, fuzzy: false, max_results: 10, source: "any"
         )
           Responder.call do
             raise ValidationError.new("Provide either document_id or text, not both") if document_id && text
@@ -265,7 +343,8 @@ module Bookworm
               quote: quote,
               document_id: target_id,
               fuzzy: fuzzy,
-              max_results: max_results
+              max_results: max_results,
+              source: source
             )
           end
         end
@@ -299,12 +378,15 @@ module Bookworm
         title Bookworm::I18n.t("tools.stats.title")
         description Bookworm::I18n.t("tools.stats.description")
         annotations(read_only_hint: true, idempotent_hint: true, open_world_hint: false)
-        input_schema(type: "object", properties: {})
+        input_schema(
+          type: "object",
+          properties: { document_id: Schemas.string(:document_id_optional) }
+        )
         output_schema(Schemas.stats_output)
 
-        def self.call(server_context:)
+        def self.call(server_context:, document_id: nil)
           Responder.call do
-            Tools.app(server_context).stats
+            Tools.app(server_context).stats(document_id: document_id)
           end
         end
       end
@@ -377,6 +459,7 @@ module Bookworm
             },
             limit: Schemas.integer(:limit_edges, minimum: 1, maximum: 500),
             max_nodes: Schemas.integer(:max_nodes, minimum: 1, maximum: 200),
+            min_confidence: Schemas.number(:min_confidence),
             format: { type: "string", enum: %w[json plantuml both], default: "json" },
             include_evidence: Schemas.boolean(:include_evidence),
             include_url: Schemas.boolean(:include_url)
@@ -386,7 +469,8 @@ module Bookworm
 
         def self.call(
           server_context:, entity_id: nil, document_id: nil, depth: 1, predicates: nil,
-          limit: 100, max_nodes: 50, format: "json", include_evidence: true, include_url: false
+          limit: 100, max_nodes: 50, min_confidence: 0.5, format: "json",
+          include_evidence: true, include_url: false
         )
           Responder.call do
             Tools.app(server_context).get_relations(
@@ -396,6 +480,7 @@ module Bookworm
               predicates: predicates,
               limit: limit,
               max_nodes: max_nodes,
+              min_confidence: min_confidence,
               format: format,
               include_evidence: include_evidence,
               include_url: include_url
@@ -416,6 +501,7 @@ module Bookworm
             finish: Schemas.string(:finish),
             document_id: Schemas.string(:document_id_optional),
             max_depth: Schemas.integer(:max_depth, minimum: 1, maximum: 10),
+            min_confidence: Schemas.number(:min_confidence),
             format: { type: "string", enum: %w[json plantuml both], default: "json" },
             include_evidence: Schemas.boolean(:include_evidence),
             include_url: Schemas.boolean(:include_url)
@@ -426,7 +512,7 @@ module Bookworm
 
         def self.call(
           start:, finish:, server_context:, document_id: nil, max_depth: 4,
-          format: "json", include_evidence: true, include_url: false
+          min_confidence: 0.5, format: "json", include_evidence: true, include_url: false
         )
           Responder.call do
             Tools.app(server_context).get_logical_chain(
@@ -434,6 +520,7 @@ module Bookworm
               finish: finish,
               document_id: document_id,
               max_depth: max_depth,
+              min_confidence: min_confidence,
               format: format,
               include_evidence: include_evidence,
               include_url: include_url
@@ -493,11 +580,13 @@ module Bookworm
 
       ALL = [
         IngestBookTool,
+        IngestBooksTool,
         IngestTextTool,
         ListDocumentsTool,
         GetDocumentTool,
         GetOutlineTool,
         ReadPassageTool,
+        ReadChapterTool,
         SearchTool,
         FindQuoteTool,
         DeleteDocumentTool,

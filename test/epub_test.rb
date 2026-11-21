@@ -16,6 +16,8 @@ class EpubTest < Minitest::Test
       assert_equal "en", document.language
       assert_equal "epub", document.format
       assert_equal 2, document.nodes.count { |node| node.kind == "chapter" }
+      refute document.passages.any? { |passage| passage.text == "Section A" }
+      refute document.passages.any? { |passage| passage.text.include?("Chapter One") && passage.text.length < 40 }
 
       outline = app.get_outline(document_id: document.id)
       assert_equal ["Chapter One", "Chapter Two"], outline[:root][:children].map { |child| child[:title] }

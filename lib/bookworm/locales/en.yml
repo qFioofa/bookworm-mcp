@@ -6,11 +6,128 @@ en:
 
       It searches books and text fragments and returns ranked passages with citations,
       offsets, and score breakdowns. It never evaluates a book, ranks ideas by quality,
-      or writes an answer. Use read_passage to inspect a hit, find_quote to verify a
-      quotation, and ingest_text for an ad-hoc fragment.
+      or writes an answer. Use read_passage to inspect a hit, read_chapter to read a
+      whole chapter, find_quote to verify a quotation against the original book, and
+      ingest_text for an ad-hoc fragment.
 
       Graph tools expose rule-based entity and relation links extracted from the text.
       Those links are descriptive, not judgments of truth or quality.
+
+      Scenario prompts in prompts/list describe recommended tool combinations for
+      fact lookup, quote verification, chapter study, entity profiles, concept
+      chains, case collection, cross-book comparison, evidence packs, and notes
+      cross-checks. Use prompts/get to load one.
+  scenarios:
+    prompt:
+      heading: "Bookworm scenario: %{title}"
+      when: "Use when"
+      request: "Request"
+      document: "Document scope"
+      language: "Answer language"
+      steps: "Steps"
+      no_steps: "no steps are available; ask for the missing inputs"
+      arguments: "arguments"
+      stop_when: "Stop when"
+      expected: "Expected result"
+      constraints: "Constraints"
+      no_document: "not specified; ask the user or resolve it through list_documents"
+      arguments_meta:
+        request:
+          title: "Request"
+          description: "The user's question, claim, quotation, or analysis goal."
+        document_id:
+          title: "Document id"
+          description: "Optional document id to scope the scenario to one document."
+        language:
+          title: "Language"
+          description: "Optional language for the bot's answer."
+    step_notes:
+      list_documents: "check which documents are in memory"
+      stats: "get document and passage counts"
+      get_document: "read metadata and a shallow outline"
+      get_outline: "walk the chapter and section tree"
+      read_passage: "read the hit with its neighbours and footnotes"
+      read_chapter: "read a whole chapter or section with pagination"
+      search: "find candidate passages; retrieval, not an answer"
+      find_quote: "verify a quotation against the parsed text"
+      search_entities: "find candidate entities and terms"
+      get_entity: "read mentions, relations, and linked cases"
+      get_relations: "inspect the rule-based graph around an entity"
+      get_logical_chain: "find a shortest evidence-backed chain"
+      find_cases: "find marker-based examples and case candidates"
+      get_case: "read one case with its constituent passages"
+      ingest_text: "add an ad-hoc text fragment"
+    guardrails:
+      citations_required: "Every claim must carry a passage_id and a citation from the tool output."
+      no_invented_quotes: "Do not quote text that no tool returned. Verify quotations with find_quote."
+      verified_only: "Treat verified=false, fuzzy matches, and no_evidence as missing evidence, not as proof."
+      text_warning: "Quotes confirmed only against an ingested text fragment carry a warning and are not book evidence."
+      graph_descriptive: "Graph links are rule-based descriptions. Confidence is extraction certainty, not truth."
+      no_evaluation: "The server does not rate book quality, ideas, or truth. Do not ask it to."
+      no_answer: "The server retrieves evidence; the bot writes the answer."
+      report_gaps: "Report missing evidence and empty results explicitly instead of filling gaps."
+      separate_citations: "When comparing documents, keep citations separate and never merge passages from different books into one quote."
+      pagination: "Follow next_offset, next_cursor, and limit instead of assuming a full result in one call."
+    triage:
+      title: "Corpus triage"
+      description: "Map the documents in memory and their structure before a deeper search."
+      when: "The user asks what is available, which book to open, or where to start."
+      stop_when: "The document list and the relevant outline are known."
+      output: "A map of documents, chapter paths, and one concrete next search step."
+    fact_lookup:
+      title: "Fact or thesis lookup"
+      description: "Find passages that state or discuss the requested fact or thesis."
+      when: "The user asks what a book says about a topic, person, event, or claim."
+      stop_when: "Two or three relevant passages are read in context and their citations are recorded."
+      output: "Ranked passages with citations and offsets; no synthesis beyond what the passages say."
+    quote_verification:
+      title: "Quote verification"
+      description: "Check whether a quotation exists in the parsed book before using it."
+      when: "The user supplies a quotation, an attribution, or asks whether a phrase is in a book."
+      stop_when: "Every occurrence is classified as verified or missing, with offsets."
+      output: "Occurrences with verified, match_type, offsets, quote_hash, and source; missing evidence is stated explicitly."
+    chapter_study:
+      title: "Chapter study"
+      description: "Read a chapter or section in order and collect its evidence."
+      when: "The user asks to explain, summarize, or inspect one chapter or section."
+      stop_when: "The requested chapter range is read and the relevant passages are cited."
+      output: "An ordered set of passages with citations and chapter paths, plus pagination state."
+    entity_profile:
+      title: "Entity profile"
+      description: "Collect mentions, relations, and linked cases for one entity."
+      when: "The user asks who or what an entity is, or where it appears."
+      stop_when: "Mentions and direct relations are read and the strongest evidence is opened."
+      output: "Entity summary, mentions, rule-based relations, and linked cases with evidence."
+    concept_chain:
+      title: "Concept chain"
+      description: "Trace a rule-based path between two concepts with evidence."
+      when: "The user asks how one concept leads to another or what connects them."
+      stop_when: "A chain is found, or the absence of a chain is confirmed and reported."
+      output: "Chain nodes and edges with predicates, confidence, evidence, and completeness."
+    case_collection:
+      title: "Case collection"
+      description: "Find marker-based examples, illustrations, and case studies."
+      when: "The user asks for examples or cases about a topic or entity."
+      stop_when: "Candidate cases are opened and their constituent passages are cited."
+      output: "Cases with kind, markers, passage_ids, citations, and linked entities."
+    cross_book_comparison:
+      title: "Cross-book comparison"
+      description: "Compare how several documents treat the same topic without merging their evidence."
+      when: "The user asks to compare books, authors, or chapters on one question."
+      stop_when: "Each document has its own passages and citations for the shared topic."
+      output: "Per-document evidence with separate citations and explicit gaps."
+    evidence_pack:
+      title: "Evidence pack"
+      description: "Assemble a retrieval-only evidence set for a larger analysis."
+      when: "The user needs material for an essay, review, or decision, not an answer."
+      stop_when: "The main queries are paged through and the relevant chapters and cases are opened."
+      output: "A structured list of passages, citations, cases, and relations, plus remaining gaps."
+    notes_cross_check:
+      title: "Notes cross-check"
+      description: "Compare notes or a claim with the book and separate book evidence from text fragments."
+      when: "The user brings notes, a draft, or a claim to verify against a book."
+      stop_when: "Each claim is marked as book evidence, text-only evidence, or missing."
+      output: "Claims mapped to verified book occurrences or explicit missing evidence."
   cli:
     usage: 'Usage: bookworm-mcp [options]'
     version: Print version and exit
@@ -35,10 +152,15 @@ en:
       title: Ingest book
       description: Parse a local EPUB, PDF, FB2, DjVu, Markdown, or TXT book into
         an in-memory searchable document.
+    ingest_books:
+      title: Ingest books
+      description: Parse several local book files in one call. Per-file results
+        include the document metadata and cached status, or an error for that file.
     ingest_text:
       title: Ingest text fragment
-      description: Create an ephemeral in-memory document from inline text. Use it
-        for a passage, an article, or a fragment that is not a book.
+      description: Create an ephemeral in-memory document from inline text, a local
+        text file, or an HTTP(S) URL. Use it for a passage, an article, or a fragment
+        that is not a book.
     list_documents:
       title: List documents
       description: List books and text fragments currently held in memory.
@@ -48,15 +170,21 @@ en:
     get_outline:
       title: Get outline
       description: Return the chapter and section tree for a book or text fragment.
+        Use max_nodes and titles_only for a compact response.
     read_passage:
       title: Read passage
-      description: Read a passage by id, with optional neighbouring passages and a
-        citation.
+      description: Read a passage by id, with optional neighbouring passages, a
+        citation, and linked footnotes.
+    read_chapter:
+      title: Read chapter
+      description: Read all passages of a chapter or section by node id, with an
+        optional offset and limit. Returns citations, content ranges, and footnotes.
     search:
       title: Search
-      description: Smart lexical search over a book, a text fragment, or all in-memory
-        documents. Returns ranked passages with citations and score breakdown. It
-        does not generate an answer.
+      description: Lexical search over a book, a text fragment, or all in-memory
+        documents. This server has no embeddings; semantic and vector search are
+        disabled. Returns ranked passages with citations. Use verbosity=compact for
+        smaller responses. It does not generate an answer.
     find_quote:
       title: Find quote
       description: Find an exact or normalized quote in one document or across all
@@ -77,11 +205,12 @@ en:
     get_relations:
       title: Get relations
       description: Return a rule-based entity graph around an entity or a whole document.
-        Supports JSON and PlantUML output.
+        Supports JSON and PlantUML output. Links below min_confidence are omitted;
+        the default 0.5 excludes weak CO_OCCURS edges.
     get_logical_chain:
       title: Get logical chain
       description: Find a shortest evidence-backed chain between two entities. Supports
-        JSON and PlantUML output.
+        JSON and PlantUML output. Links below min_confidence are omitted.
     find_cases:
       title: Find cases
       description: Find examples, illustrations, anecdotes, and case studies by marker,
@@ -110,6 +239,8 @@ en:
   graph:
     legend: Rule-based links from the text. No evaluation.
     title: Entity relations
+  quotes:
+    text_warning: Verified against an ingested text fragment, not against a book.
   search:
     stopwords:
     - a
@@ -361,6 +492,9 @@ en:
       - "\\b(?:contrasts?\\s+with|differs?\\s+from|opposed\\s+to|unlike)\\b"
       INCLUDES:
       - "\\b(?:includes?|contains?|consists?\\s+of|comprises?)\\b"
+      PART_OF:
+      - "\\b(?:is|are|was|were)\\s+(?:a\\s+)?part\\s+of\\b"
+      - "\\bbelongs?\\s+to\\b"
       INFLUENCES:
       - "\\b(?:influences?|affects?|shapes?)\\b"
       EXAMPLE_OF:
@@ -391,8 +525,13 @@ en:
     - "\\A(?:chapter|part|book)\\s+[\\divxlcdm]+"
   schemas:
     path: Absolute or relative path to a local book file
+    paths_batch: List of local book file paths
     title_override: Optional title override
+    replace_document: Remove a previously ingested version of the same path before adding the new one
     text: Text to index
+    text_inline_optional: Inline text; omit when source_path or source_url is used
+    source_path_text: Local text file to read instead of inline text
+    source_url_text: HTTP or HTTPS URL to read instead of inline text
     title_optional: Optional title
     language_optional: Optional ISO language code
     ttl_seconds: Ephemeral lifetime in seconds; 0 means no expiry
@@ -400,10 +539,17 @@ en:
     document_id: Document id
     node_id: Optional node id to start from
     depth_outline: Maximum outline depth
+    max_nodes_outline: Maximum number of outline nodes to return
+    titles_only: Return only ids, titles, and levels; omit content ranges and counts
+    min_confidence: Minimum relation confidence (default 0.5; CO_OCCURS is 0.4)
     passage_id: Passage id returned by search or ingest
     before: Number of preceding passages
     after: Number of following passages
     max_tokens_passage: Approximate token budget per passage
+    node_id_chapter: Chapter or section node id returned by get_outline
+    offset_chapter: Passage offset inside the chapter
+    limit_chapter: Maximum number of passages to return
+    include_footnotes: Include linked footnotes
     query_search: Search query; supports quoted phrases, +required terms, and -excluded
       terms
     document_id_search: Optional document id; omit to search all documents
@@ -411,13 +557,17 @@ en:
     inline_title: Title for inline text
     language_inline: Language for inline text
     k: Number of results
+    mode_search: smart and lexical are lexical-only; no embeddings or vector search
     cursor: Opaque pagination cursor
     include_text: Include full passage text in each hit
+    verbosity_search: Response detail; compact omits highlights, breakdown, and matched terms
+    include_breakdown: Include the score breakdown
     max_tokens_text: Approximate token budget for included text
     quote: Quote to find
     document_id_optional: Optional document id
     inline_text_quote: Optional inline text to search instead of document_id
     fuzzy: Also return fuzzy candidates when no exact match is found
+    source_quote: Evidence source; books are preferred, text fragments are marked as ephemeral
     max_results: Maximum number of occurrences
     query_entities: Entity name or prefix; omit to list top entities
     limit_entities: Maximum number of entities

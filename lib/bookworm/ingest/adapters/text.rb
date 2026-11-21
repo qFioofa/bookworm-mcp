@@ -90,6 +90,8 @@ module Bookworm
 
             if (item = line.match(/\A\s*(?:[-*+]|\d+[.)])\s+(.+)\z/))
               flush_paragraph.call
+              next if toc_link_item?(item[1])
+
               blocks << Block.new(type: :list_item, text: clean(item[1]))
               next
             end
@@ -140,6 +142,15 @@ module Bookworm
 
           flush.call
           blocks
+        end
+
+        def self.toc_link_item?(text)
+          value = text.to_s.strip
+          return false if value.empty?
+          return false unless value.match?(/\[[^\]]+\]\(#[^)]+\)/)
+
+          remainder = value.gsub(/\[[^\]]+\]\(#[^)]*\)/, "").gsub(/[\s·|,;:–—-]+/, "")
+          remainder.empty?
         end
 
         def self.clean(text)
